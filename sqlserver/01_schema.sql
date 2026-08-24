@@ -10,11 +10,23 @@
    procedure holding business logic that will have to be rewritten.
    ═══════════════════════════════════════════════════════════════════ */
 
+/* Required before any table carrying a computed column or a filtered
+   index. sqlcmd does not set these by default, and the failure message
+   ("CREATE TABLE failed because the following SET options have incorrect
+   settings: QUOTED_IDENTIFIER") names the symptom rather than the cause. */
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
 IF DB_ID('payments') IS NULL
     CREATE DATABASE payments;
 GO
 
 USE payments;
+GO
+
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
 GO
 
 /* ─── merchants ───────────────────────────────────────────────────── */
@@ -67,7 +79,19 @@ IF OBJECT_ID('dbo.transactions', 'U') IS NOT NULL DROP TABLE dbo.transactions;
 GO
 
 CREATE TABLE dbo.transactions (
-    txn_id          BIGINT IDENTITY(1,1) PRIMARY KEY,
+    -- NONCLUSTERED deliberately. In SQL Server a PRIMARY KEY is clustered
+    -- by default, and a table can only have one clustered index — so
+    -- leaving the default here makes the clustered index on captured_at
+    -- below impossible ("Cannot create more than one clustered index").
+    --
+    -- Clustering on the capture date rather than the surrogate key is a
+    -- real legacy pattern: it makes date-range scans sequential, which is
+    -- what a settlement report does all day.
+    --
+    -- It is also exactly what does not survive the migration. PostgreSQL
+    -- has no maintained clustered index, so those range scans behave
+    -- differently on the other side.
+    txn_id          BIGINT IDENTITY(1,1) NOT NULL,
     merchant_id     INT NOT NULL,
 
     -- TRAP 8: MONEY. Scale of 4, and a range that does not map to any
@@ -91,6 +115,8 @@ CREATE TABLE dbo.transactions (
     -- NULLs. A conversion that silently turns NULL into '' or 0 shows
     -- up nowhere except a per-column NULL count.
     settled_at      DATETIME2(3) NULL,
+
+    CONSTRAINT pk_transactions PRIMARY KEY NONCLUSTERED (txn_id),
 
     CONSTRAINT fk_txn_merchant FOREIGN KEY (merchant_id)
         REFERENCES dbo.merchants(merchant_id)
