@@ -142,3 +142,40 @@ resource "aws_iam_role_policy" "restore_drill" {
 }
 
 data "aws_caller_identity" "current" {}
+
+# DMS control, for the task runner.
+#
+# Scoped to this project's replication resources. Notably this does NOT
+# include CreateReplicationInstance or DeleteReplicationInstance — the
+# runner drives a task, it does not manage infrastructure. Terraform owns
+# that, and the boundary is deliberate.
+resource "aws_iam_role_policy" "dms_control" {
+  name = "${var.project}-dms-control"
+  role = aws_iam_role.sqlserver.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dms:DescribeReplicationTasks",
+          "dms:DescribeReplicationInstances",
+          "dms:DescribeEndpoints",
+          "dms:DescribeConnections",
+          "dms:DescribeTableStatistics",
+          "dms:TestConnection",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dms:StartReplicationTask",
+          "dms:StopReplicationTask",
+        ]
+        Resource = "arn:aws:dms:${var.region}:${data.aws_caller_identity.current.account_id}:task:*"
+      },
+    ]
+  })
+}
