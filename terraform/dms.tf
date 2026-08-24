@@ -134,31 +134,36 @@ resource "aws_dms_endpoint" "source" {
 
   ssl_mode = "none" # container uses a self-signed certificate
 
-  # Two attributes, and the first one is not optional.
+  # setUpMsCdcForTables is deliberately ABSENT, and that took three
+  # failures to arrive at.
   #
-  # setUpMsCdcForTables=true
-  #   DMS has TWO ways to read changes from SQL Server, and it picks the
-  #   wrong one by default here. MS-REPLICATION is the default and needs
-  #   a configured Distributor — full transactional replication
-  #   infrastructure. Without it the task dies at startup with:
+  # DMS has two ways to read changes from SQL Server:
   #
-  #     "The MS SQL Server instance is not set up for Replication."
-  #     "The Distributor has not been installed correctly. Could not
-  #      enable database for publishing."
+  #   MS-REPLICATION  needs a configured Distributor
+  #   MS-CDC          needs CDC enabled on the database and tables
   #
-  #   MS-CDC is the lighter path and the one this source has enabled
-  #   (see sqlserver/03_enable_cdc.sql). This attribute is what tells
-  #   DMS to use it. Nothing in the endpoint configuration hints that
-  #   the choice exists.
+  # And the choice is made from the LOGIN, not from configuration:
+  # sysadmin gets MS-REPLICATION, anything else gets MS-CDC. Connecting
+  # as sa therefore failed with "The Distributor has not been installed
+  # correctly", and no attribute could override it — see the dedicated
+  # dms_user in sqlserver/create_dms_user.py.
   #
-  # safeguardPolicy=RELY_ON_SQL_SERVER_REPLICATION_AGENT
-  #   Governs how DMS stops the transaction log being truncated before
-  #   it has read it. The default, EXCLUSIVE_AUTOMATIC_TRUNCATION, opens
-  #   a transaction on the source to hold the log open — surprising
-  #   behaviour on a production server. With MS-CDC the capture job
-  #   already manages truncation, so DMS can rely on it instead of
-  #   interfering.
-  extra_connection_attributes = "setUpMsCdcForTables=true;safeguardPolicy=RELY_ON_SQL_SERVER_REPLICATION_AGENT"
+  # setUpMsCdcForTables=true then looked like the missing piece and is
+  # not. It means "set CDC up FOR me", not "use CDC" — so DMS tried to
+  # run sp_cdc_enable_table itself and failed with "Only members of the
+  # sysadmin fixed server role can perform this operation", which is the
+  # exact privilege that had just been removed on purpose.
+  #
+  # CDC is already enabled by sqlserver/03_enable_cdc.sql. With a
+  # non-sysadmin login and CDC in place, DMS selects MS-CDC on its own
+  # and the attribute is not only unnecessary, it is actively fatal.
+  #
+  # safeguardPolicy governs how DMS keeps the transaction log from being
+  # truncated before it has read it. The default opens a transaction on
+  # the source to hold the log open, which is surprising on a production
+  # server; with MS-CDC the capture job already manages truncation, so
+  # DMS can rely on it instead of interfering.
+  extra_connection_attributes = "safeguardPolicy=RELY_ON_SQL_SERVER_REPLICATION_AGENT"
 
   tags = { Name = "${var.project}-source" }
 }
