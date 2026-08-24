@@ -65,10 +65,16 @@ resource "aws_db_instance" "postgres" {
 
   multi_az = var.multi_az
 
-  # 7 days of backups also enables point-in-time recovery. Zero would
-  # disable PITR entirely, and PITR is half of what "recoverability
-  # meets SLA" actually means.
-  backup_retention_period = 7
+  # Any non-zero retention enables point-in-time recovery, and PITR is
+  # half of what "recoverability meets SLA" actually means. Zero would
+  # disable it entirely.
+  #
+  # This wants to be 7. It is 1 because the AWS Free Plan caps backup
+  # retention, and CreateDBInstance fails outright above the cap:
+  #   FreeTierRestrictionError: The specified backup retention period
+  #   exceeds the maximum available to free tier customers.
+  # Production would be 7 to 35 depending on the recovery point objective.
+  backup_retention_period = var.backup_retention_days
   backup_window           = "07:00-08:00" # UTC, off-peak for US business hours
   maintenance_window      = "sun:08:00-sun:09:00"
 

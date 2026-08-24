@@ -39,11 +39,32 @@ variable "postgres_instance_class" {
 
 variable "sqlserver_instance_type" {
   description = <<-EOT
-    t3.medium — 4 GB RAM. SQL Server needs 2 GB minimum and is miserable at
-    exactly 2 GB. Must be x86: SQL Server does not run on Graviton.
+    c7i-flex.large — 2 vCPU, 4 GB RAM, x86.
+
+    Two hard constraints picked this:
+      1. SQL Server needs 2 GB minimum and is miserable at exactly 2 GB.
+      2. SQL Server does not run on Graviton, so t4g.* is out entirely.
+
+    And one account constraint: this account is on the AWS Free Plan, which
+    only permits free-tier-eligible instance types. t3.medium was rejected
+    outright. c7i-flex.large is on the allowed list and has more headroom
+    than t3.medium would have.
   EOT
   type        = string
-  default     = "t3.medium"
+  default     = "c7i-flex.large"
+}
+
+variable "backup_retention_days" {
+  description = <<-EOT
+    Days of automated backups. Any value above 0 also enables point-in-time
+    recovery.
+
+    1 because the AWS Free Plan caps this and rejects the CreateDBInstance
+    call above the cap. Production would be 7 to 35 depending on the
+    recovery point objective the business signs up to.
+  EOT
+  type        = number
+  default     = 1
 }
 
 variable "multi_az" {
