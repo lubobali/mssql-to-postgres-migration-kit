@@ -82,9 +82,18 @@ resource "aws_dms_replication_subnet_group" "main" {
 }
 
 resource "aws_dms_replication_instance" "main" {
-  replication_instance_id    = "${var.project}-dms"
-  replication_instance_class = "dms.t3.micro"
-  allocated_storage          = 20
+  replication_instance_id = "${var.project}-dms"
+  # dms.t3.micro no longer exists — AWS retired it, and the API says only
+  # "Invalid ReplicationInstance class" rather than naming what is valid.
+  #   aws dms describe-orderable-replication-instances
+  # is the authority. t3.small is the smallest that remains, at roughly
+  # $0.036/hr.
+  replication_instance_class = "dms.t3.small"
+
+  # Sized for the change log, not for the data. DMS streams the full load
+  # rather than staging it, so this only has to hold cached changes while
+  # the full load runs.
+  allocated_storage = 20
 
   replication_subnet_group_id = aws_dms_replication_subnet_group.main.replication_subnet_group_id
   vpc_security_group_ids      = [aws_security_group.dms.id]

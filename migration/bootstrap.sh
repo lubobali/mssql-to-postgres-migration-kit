@@ -29,7 +29,8 @@ python3 -m pip install --quiet --user \
   'psycopg[binary]>=3.1' \
   'boto3>=1.34' \
   'pytest>=8.0' \
-  'tabulate>=0.9'
+  'tabulate>=0.9' \
+  'pyarrow>=15.0'
 
 log "Checking"
 python3 - <<'PY'
