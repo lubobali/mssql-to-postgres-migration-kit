@@ -148,13 +148,29 @@ def profile(conn, dialect: str) -> dict:
     }
 
     # ─── status distribution — the collation trap and encoding ───────
+    # The COLLATE is essential, and its absence is a finding in itself.
+    #
+    # Under a case-insensitive collation, GROUP BY MERGES 'Captured',
+    # 'captured' and 'CAPTURED' into a single group and labels it with
+    # whichever spelling it encountered first. So SQL Server reports one
+    # status where three exist, and the source database is structurally
+    # unable to describe its own distinct values.
+    #
+    # Forcing a case-sensitive collation asks the question the profiler
+    # actually meant to ask. The three counts then sum exactly to the one
+    # merged count, which is what proves the data is intact.
+    group_by = (
+        "txn_status COLLATE SQL_Latin1_General_CP1_CS_AS"
+        if dialect == "sqlserver"
+        else "txn_status"
+    )
     status_rows = _rows(
         conn,
         f"""
-        SELECT txn_status, COUNT(*)
+        SELECT {group_by}, COUNT(*)
         FROM {q('transactions')}
-        GROUP BY txn_status
-        ORDER BY txn_status
+        GROUP BY {group_by}
+        ORDER BY 1
         """,
     )
     result["status_counts"] = {str(s): c for s, c in status_rows}
@@ -189,16 +205,23 @@ def profile(conn, dialect: str) -> dict:
     }
 
     # ─── unicode survival ────────────────────────────────────────────
-    # A named merchant, checked by exact string match. Encoding damage
-    # during the load shows up here and in no aggregate.
+    #
+    # Encoding damage during the load shows up here and in no aggregate.
+    #
+    # The N prefix is required on SQL Server and its absence is silent.
+    # Without it a literal is treated as VARCHAR, downconverted to the
+    # database's non-Unicode codepage, and every non-ASCII character
+    # becomes '?' — so the LIKE matches nothing and the check reports a
+    # clean pass over an empty result set.
+    n = "N" if dialect == "sqlserver" else ""
     result["unicode_sample"] = [
         r[0]
         for r in _rows(
             conn,
             f"""SELECT legal_name FROM {q('merchants')}
-                WHERE legal_name LIKE '%北方%'
-                   OR legal_name LIKE '%Трейд%'
-                   OR legal_name LIKE '%Móvil%'
+                WHERE legal_name LIKE {n}'%北方%'
+                   OR legal_name LIKE {n}'%Трейд%'
+                   OR legal_name LIKE {n}'%Móvil%'
                 ORDER BY legal_name""",
         )
     ]
