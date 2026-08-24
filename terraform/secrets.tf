@@ -80,3 +80,36 @@ resource "aws_secretsmanager_secret_version" "postgres_master" {
     dbname   = aws_db_instance.postgres.db_name
   })
 }
+
+# ─── DMS source login ────────────────────────────────────────────────
+#
+# Separate from sa deliberately, and not only for least privilege: DMS
+# chooses MS-REPLICATION over MS-CDC based on whether the connecting
+# account is sysadmin. Connecting as sa forces the wrong mechanism and
+# the task fails. See sqlserver/04_dms_user.sql.
+
+resource "random_password" "dms_user" {
+  length           = 32
+  special          = true
+  override_special = "!#*-_="
+  min_upper        = 2
+  min_lower        = 2
+  min_numeric      = 2
+  min_special      = 2
+}
+
+resource "aws_secretsmanager_secret" "dms_user" {
+  name                    = "${var.project}/sqlserver/dms"
+  description             = "Non-sysadmin login DMS uses, so it selects MS-CDC"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "dms_user" {
+  secret_id = aws_secretsmanager_secret.dms_user.id
+  secret_string = jsonencode({
+    username = "dms_user"
+    password = random_password.dms_user.result
+    engine   = "sqlserver"
+    port     = 1433
+  })
+}

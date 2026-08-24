@@ -48,6 +48,7 @@ resource "aws_iam_role_policy" "read_secrets" {
       Resource = [
         aws_secretsmanager_secret.sqlserver_sa.arn,
         aws_secretsmanager_secret.postgres_master.arn,
+        aws_secretsmanager_secret.dms_user.arn,
       ]
     }]
   })

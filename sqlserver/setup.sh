@@ -103,6 +103,19 @@ sudo docker cp 02_load.sql           "$CONTAINER":/tmp/02_load.sql
 sudo docker exec "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
   -S localhost -U sa -P "$SA_PASSWORD" -C -i /tmp/02_load.sql
 
+# ─── A non-sysadmin login for DMS ───────────────────────────────────
+
+log "Creating the DMS login"
+DMS_PASSWORD="$(aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "${PROJECT}/sqlserver/dms" \
+  --query SecretString --output text | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])')"
+
+sudo docker cp 04_dms_user.sql "$CONTAINER":/tmp/04_dms_user.sql
+sudo docker exec "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P "$SA_PASSWORD" -C \
+  -v DMS_PASSWORD="$DMS_PASSWORD" -i /tmp/04_dms_user.sql
+
 # ─── CDC, so DMS can replicate changes rather than only copying ──────
 
 log "Enabling Change Data Capture"

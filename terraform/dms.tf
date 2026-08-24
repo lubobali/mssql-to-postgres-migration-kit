@@ -126,8 +126,11 @@ resource "aws_dms_endpoint" "source" {
   server_name   = aws_instance.sqlserver.private_ip
   port          = 1433
   database_name = "payments"
-  username      = "sa"
-  password      = random_password.sqlserver_sa.result
+  # NOT sa. DMS picks MS-REPLICATION over MS-CDC whenever the connecting
+  # account is sysadmin, and no connection attribute overrides that — the
+  # decision is made from the login before the attribute is read.
+  username = "dms_user"
+  password = random_password.dms_user.result
 
   ssl_mode = "none" # container uses a self-signed certificate
 
