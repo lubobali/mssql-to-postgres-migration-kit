@@ -301,3 +301,67 @@ def _same_instant(a: str | None, b: str | None) -> bool:
         return parse(a) == parse(b)
     except ValueError:
         return a == b
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Class 0 — the check that comparing two databases cannot make
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_source_database_matches_the_original_file() -> None:
+    """
+    The legacy database agrees with the file it was loaded from.
+
+    This exists because of a real failure. BULK INSERT on Linux cannot
+    read UTF-8, and dropping the unsupported CODEPAGE option loaded
+    'σîùµû╣τë⌐µ╡ü' where '北方物流' belonged. Nothing errored.
+
+    Thirteen of fourteen checks passed over that corrupted data, and the
+    migration itself was flawless — it carried the corruption across
+    faithfully, so source and target matched perfectly.
+
+    That is the blind spot in every verification suite that only diffs
+    two databases: it proves the move was faithful, never that the thing
+    being moved was right. Somewhere the chain has to be anchored to
+    something outside both systems.
+    """
+    from pathlib import Path
+
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "migration"))
+    from db import sqlserver_connection
+
+    seed_file = Path(__file__).resolve().parent.parent / "sqlserver" / "data" / "merchants.psv"
+    if not seed_file.exists():
+        import pytest as _pytest
+
+        _pytest.skip("seed file not present — run the generator first")
+
+    expected = {}
+    with seed_file.open(encoding="utf-8") as fh:
+        for line in fh:
+            parts = line.rstrip("\n").split("|")
+            if len(parts) > 2:
+                expected[int(parts[0])] = parts[2]
+
+    conn = sqlserver_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT merchant_id, legal_name FROM dbo.merchants")
+        actual = {int(r[0]): r[1] for r in cur.fetchall()}
+        cur.close()
+    finally:
+        conn.close()
+
+    corrupted = [
+        f"  merchant {mid}: file has {expected[mid]!r}, database has {actual[mid]!r}"
+        for mid in sorted(expected)
+        if mid in actual and actual[mid] != expected[mid]
+    ]
+
+    assert not corrupted, (
+        "the legacy database does not match the file it was loaded from — "
+        "the data was already wrong before any migration happened:\n"
+        + "\n".join(corrupted[:10])
+    )

@@ -37,10 +37,24 @@ WITH (
     FORMAT           = 'CSV',
     FIELDTERMINATOR  = '|',
     ROWTERMINATOR    = '0x0a',
-    -- No CODEPAGE: "Keyword or statement option 'CODEPAGE' is not supported
-    -- on the 'Linux' platform." SQL Server on Linux reads UTF-8 files
-    -- natively, so the unicode merchant names survive without it. On
-    -- Windows this line would be CODEPAGE = '65001'.
+
+    -- DATAFILETYPE = 'widechar', and the file is converted to UTF-16LE
+    -- before it gets here.
+    --
+    -- The obvious approach is CODEPAGE = '65001' to read UTF-8. That
+    -- option does not exist on Linux: "Keyword or statement option
+    -- 'CODEPAGE' is not supported on the 'Linux' platform."
+    --
+    -- Dropping it and hoping UTF-8 is read natively is what produced
+    -- 'σîùµû╣τë⌐µ╡ü' where '北方物流' belonged — the UTF-8 bytes were
+    -- interpreted one byte at a time as a single-byte codepage. Nothing
+    -- errored. Row counts, sums and null counts were all still correct,
+    -- and thirteen of fourteen verification checks passed over the
+    -- corrupted data.
+    --
+    -- NVARCHAR is UTF-16 internally, so handing BULK INSERT a UTF-16
+    -- file removes the guesswork entirely.
+    DATAFILETYPE     = 'widechar',
     -- KEEPIDENTITY is required. SET IDENTITY_INSERT does NOT apply to
     -- BULK INSERT: without this the loader discards the ids in the file
     -- and tries to generate its own, which fails against a NOT NULL

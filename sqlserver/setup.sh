@@ -83,7 +83,13 @@ log "Generating the dataset"
 python3 generate_data.py --merchants 50 --transactions 250000
 
 log "Bulk loading"
-sudo docker cp data/merchants.psv    "$CONTAINER":/tmp/merchants.psv
+# BULK INSERT on Linux cannot read UTF-8 (no CODEPAGE option), and
+# NVARCHAR is UTF-16 internally — so hand it UTF-16LE and the encoding
+# stops being a guess. The transactions file is pure ASCII and needs no
+# conversion.
+iconv -f UTF-8 -t UTF-16LE data/merchants.psv > data/merchants.utf16.psv
+
+sudo docker cp data/merchants.utf16.psv "$CONTAINER":/tmp/merchants.psv
 sudo docker cp data/transactions.psv "$CONTAINER":/tmp/transactions.psv
 sudo docker cp 02_load.sql           "$CONTAINER":/tmp/02_load.sql
 
