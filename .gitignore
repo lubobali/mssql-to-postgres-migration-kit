@@ -1,0 +1,43 @@
+# Terraform — state files contain secrets in plaintext. Never commit.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+tfplan
+*.tfplan
+
+# Credentials
+.env
+.env.*
+*.pem
+*.key
+*.csv
+credentials
+aws_credentials
+
+# Data — never commit extracted database contents
+data/
+*.parquet
+*.bak
+dumps/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
