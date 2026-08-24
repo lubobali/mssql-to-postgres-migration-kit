@@ -78,9 +78,19 @@ def profile(conn, dialect: str) -> dict:
 
     # Cast sums to text in the database. A float round-trip through the
     # driver would introduce the error this is looking for.
+    #
+    # The double cast on SQL Server is not decoration. CAST(money AS
+    # VARCHAR) rounds to TWO decimal places, but MONEY stores FOUR — so
+    # the naive version silently truncates the measurement and reports a
+    # difference that does not exist.
+    #
+    # Worse is the fix people reach for: rounding both sides to 2dp to
+    # make them agree. That permanently blinds the check to a real
+    # 4-decimal truncation, which is precisely the failure it exists to
+    # detect. The measurement has to be at least as precise as the data.
     def as_text(expr: str) -> str:
         return (
-            f"CAST({expr} AS VARCHAR(64))"
+            f"CAST(CAST({expr} AS DECIMAL(19,4)) AS VARCHAR(64))"
             if dialect == "sqlserver"
             else f"CAST({expr} AS text)"
         )
