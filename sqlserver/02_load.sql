@@ -29,48 +29,24 @@ DELETE FROM dbo.transactions;
 DELETE FROM dbo.merchants;
 GO
 
-SET IDENTITY_INSERT dbo.merchants ON;
-
 BULK INSERT dbo.merchants
 FROM '/tmp/merchants.psv'
 WITH (
-    FORMAT           = 'CSV',
-    FIELDTERMINATOR  = '|',
-    ROWTERMINATOR    = '0x0a',
-
-    -- DATAFILETYPE = 'widechar', and the file is converted to UTF-16LE
-    -- before it gets here.
-    --
-    -- The obvious approach is CODEPAGE = '65001' to read UTF-8. That
-    -- option does not exist on Linux: "Keyword or statement option
-    -- 'CODEPAGE' is not supported on the 'Linux' platform."
-    --
-    -- Dropping it and hoping UTF-8 is read natively is what produced
-    -- 'σîùµû╣τë⌐µ╡ü' where '北方物流' belonged — the UTF-8 bytes were
-    -- interpreted one byte at a time as a single-byte codepage. Nothing
-    -- errored. Row counts, sums and null counts were all still correct,
-    -- and thirteen of fourteen verification checks passed over the
-    -- corrupted data.
-    --
-    -- NVARCHAR is UTF-16 internally, so handing BULK INSERT a UTF-16
-    -- file removes the guesswork entirely.
+    -- No FORMAT = 'CSV' here. That option cannot be combined with
+    -- DATAFILETYPE, and it is unnecessary anyway: the generator writes
+    -- unquoted fields with a pipe delimiter precisely so no quoting
+    -- rules are involved.
     DATAFILETYPE     = 'widechar',
-    -- KEEPIDENTITY is required. SET IDENTITY_INSERT does NOT apply to
-    -- BULK INSERT: without this the loader discards the ids in the file
-    -- and tries to generate its own, which fails against a NOT NULL
-    -- identity column. The generated files carry explicit keys so the
-    -- dataset is reproducible, which is what makes a baseline meaningful.
+    FIELDTERMINATOR  = '|',
+    ROWTERMINATOR    = '\n',
     KEEPIDENTITY,
     KEEPNULLS,
     TABLOCK
 );
 
-SET IDENTITY_INSERT dbo.merchants OFF;
 GO
 
 /* ─── transactions ────────────────────────────────────────────────── */
-
-SET IDENTITY_INSERT dbo.transactions ON;
 
 BULK INSERT dbo.transactions
 FROM '/tmp/transactions.psv'
@@ -85,7 +61,6 @@ WITH (
     BATCHSIZE        = 50000
 );
 
-SET IDENTITY_INSERT dbo.transactions OFF;
 GO
 
 /* ─── batches, derived ────────────────────────────────────────────── */

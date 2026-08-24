@@ -84,10 +84,16 @@ python3 generate_data.py --merchants 50 --transactions 250000
 
 log "Bulk loading"
 # BULK INSERT on Linux cannot read UTF-8 (no CODEPAGE option), and
-# NVARCHAR is UTF-16 internally — so hand it UTF-16LE and the encoding
+# NVARCHAR is UTF-16 internally — so hand it UTF-16 and the encoding
 # stops being a guess. The transactions file is pure ASCII and needs no
 # conversion.
-iconv -f UTF-8 -t UTF-16LE data/merchants.psv > data/merchants.utf16.psv
+# -t UTF-16 (not UTF-16LE) because iconv only writes a byte order mark
+# for the former, and BULK INSERT rejects widechar without one:
+#   "DataFileType was incorrectly specified as widechar. DataFileType
+#    will be assumed to be char because the data file does not have a
+#    Unicode signature."
+# It then falls back to char, mangles the encoding, and continues.
+iconv -f UTF-8 -t UTF-16 data/merchants.psv > data/merchants.utf16.psv
 
 sudo docker cp data/merchants.utf16.psv "$CONTAINER":/tmp/merchants.psv
 sudo docker cp data/transactions.psv "$CONTAINER":/tmp/transactions.psv
