@@ -106,15 +106,11 @@ sudo docker exec "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
 # ─── A non-sysadmin login for DMS ───────────────────────────────────
 
 log "Creating the DMS login"
-DMS_PASSWORD="$(aws secretsmanager get-secret-value \
-  --region "$REGION" \
-  --secret-id "${PROJECT}/sqlserver/dms" \
-  --query SecretString --output text | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])')"
-
-sudo docker cp 04_dms_user.sql "$CONTAINER":/tmp/04_dms_user.sql
-sudo docker exec "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
-  -S localhost -U sa -P "$SA_PASSWORD" -C \
-  -v DMS_PASSWORD="$DMS_PASSWORD" -i /tmp/04_dms_user.sql
+# Python rather than sqlcmd -v. The sqlcmd version created the login with
+# the wrong password and said nothing; the only symptom was DMS reporting
+# "Login failed for user 'dms_user'", which points at permissions rather
+# than at variable substitution.
+python3 create_dms_user.py
 
 # ─── CDC, so DMS can replicate changes rather than only copying ──────
 
