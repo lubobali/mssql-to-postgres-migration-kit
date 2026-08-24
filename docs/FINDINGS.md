@@ -282,6 +282,68 @@ migration, applied knowingly, by someone who chose it.
 
 ---
 
+## Operations
+
+### Recoverability, measured
+
+```
+snapshot        196s   (3m 16s)
+restore         515s   (8m 35s)   ← this is the number that matters
+verification    PASSED  row counts and money sums match the live instance
+total           716s   (11m 56s)
+```
+
+**Recovery from an existing snapshot: about 9 minutes** for 250,000 rows on a
+`db.t4g.micro`. That is a measured RTO. Every other number in a recovery conversation is
+someone's estimate.
+
+Two things worth separating:
+
+- **Snapshot time is not recovery time.** The snapshot is the cheap half. Restore took 2.6×
+  longer, and restore is the half that happens during an incident.
+- **The verification step is what makes it a proven backup.** The drill queries the restored
+  copy and compares it to the live one. A snapshot that restores into a database nobody
+  queried is a file, not a recovery plan.
+
+Scale caveat: restore time grows with data volume and shrinks with instance class. Nine
+minutes here says nothing about nine minutes at 25 million rows — which is exactly why the
+drill is a script that can be re-run rather than a number written down once.
+
+### The scheduled job that has no equivalent
+
+RDS PostgreSQL has **no SQL Server Agent**. No scheduler, no job history, no failure
+alerting. And nothing in a schema comparison will report a missing job, because a job was
+never part of the schema.
+
+Rebuilt with `pg_cron`:
+
+```
+jobid  schedule      jobname                    active
+1      15 6 * * *    daily_settlement_summary   true
+
+job wrote 12,118 summary rows
+job_run_log: succeeded
+```
+
+Three details that are easy to get wrong:
+
+- **`pg_cron` schedules in UTC**, regardless of the server's timezone. One more place a
+  settlement can land on the wrong day.
+- **On RDS it needs `shared_preload_libraries` and a reboot.** Not a runtime `CREATE
+  EXTENSION`. Worth discovering before the migration rather than during it.
+- **It runs on the writer only.** Correct here, and a trap after a Multi-AZ failover if the
+  job assumes it is the only copy running.
+
+The job is **idempotent by upsert**, because a scheduled job will run twice eventually — a
+retry, a manual re-run after an incident, a failover replaying it. One that doubles its
+numbers on a second run is a liability.
+
+And it uses `lower(txn_status)` with a matching functional index. That is the collation
+remediation, applied deliberately at the one place it is needed, rather than by quietly
+rewriting the data.
+
+---
+
 ## What would be different at 100× the data
 
 This moved 250,000 rows in 14 seconds with the source offline. At 25 million with the source

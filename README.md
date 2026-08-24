@@ -10,8 +10,12 @@ that part is easy. Knowing whether it arrived *correct*. A `MONEY` column silent
 cents, or a timezone shifting settlement dates by a day, does not throw an error. It just
 gives you wrong numbers, forever.
 
-> **Status: in progress.** Building in the open. See [PLAN.md](PLAN.md) for the full scope
-> and [docs/FINDINGS.md](docs/FINDINGS.md) for what has broken so far.
+**250,000 transactions moved. 15 verification checks green. Eight real failures along the
+way, every one written up.**
+
+- **[docs/FINDINGS.md](docs/FINDINGS.md)** — what actually broke, and what each failure costs
+- **[docs/ADR-001](docs/ADR-001-rds-vs-aurora.md)** — RDS vs Aurora, and why Aurora Global Database is not active-active
+- **[docs/RUNBOOK.md](docs/RUNBOOK.md)** — build it from nothing, and take it apart
 
 ---
 
@@ -90,10 +94,13 @@ Alembic · Python · pytest · GitHub Actions
 ## Layout
 
 ```
-terraform/     infrastructure — VPC, RDS, EC2, security groups, secrets
-sqlserver/     legacy schema and data generator
-migration/     extract and load, both the manual path and DMS config
+terraform/     infrastructure — VPC, RDS, EC2, security groups, secrets, budget
+sqlserver/     legacy schema, data generator, bulk load
+postgres/      converted schema and the rebuilt scheduled job
+migration/     profiling and the migration itself
 verification/  the pytest suite that decides whether the migration passed
+operations/    the timed backup and restore drill
+ci/            the pipeline, adapted to run on a bare runner
 docs/          FINDINGS, RUNBOOK, and the RDS-vs-Aurora decision record
 ```
 
@@ -116,4 +123,24 @@ terraform destroy
 
 Everything is tagged `project=rds-migration-lab`, so nothing is left behind.
 
-**Cost while running: roughly $1.50/day.**
+**Cost while running: roughly $1.50/day.** A budget alarm at $20/month is created before
+any billable resource exists.
+
+---
+
+## Headline result
+
+```
+Legacy query returned      125,504 rows
+Migrated query returns      41,612 rows
+Silently no longer matched  83,892 rows  (66.8%)
+```
+
+Every row arrived. Every value is byte-identical. All 15 checks pass. And the same `WHERE`
+clause returns a third of what it used to, because SQL Server's default collation is
+case-insensitive and PostgreSQL's is not.
+
+Nothing errors. The report just gets quieter.
+
+Recovery, measured rather than estimated: snapshot **196s**, restore **515s**, verification
+against the restored copy **passed**.
