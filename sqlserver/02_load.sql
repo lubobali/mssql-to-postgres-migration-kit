@@ -117,18 +117,25 @@ GO
 
 /* The collation trap, as a number.
 
-   Both counts are identical on SQL Server because the default collation
-   ignores case. Run the same two queries on PostgreSQL after migration
-   and they will differ — with no error to warn you. */
+   The database collation is SQL_Latin1_General_CP1_CI_AS — case
+   INsensitive. So the first count matches 'Captured', 'captured' and
+   'CAPTURED' alike.
+
+   The second forces a case-SENSITIVE collation, which is how PostgreSQL
+   behaves by default. The gap between these two numbers is how many rows
+   a migrated query silently stops returning.
+
+   Nothing errors. The report just gets quieter. */
 
 SELECT
-    'case-insensitive match (SQL Server default)' AS comparison,
-    COUNT(*)                                      AS row_count
-FROM dbo.transactions WHERE txn_status = 'Captured'
+    'case-insensitive (SQL Server default collation)' AS comparison,
+    COUNT(*)                                          AS row_count
+FROM dbo.transactions
+WHERE txn_status = 'Captured'
 UNION ALL
 SELECT
-    'exact binary match',
+    'case-sensitive (how PostgreSQL will behave)',
     COUNT(*)
 FROM dbo.transactions
-WHERE CAST(txn_status AS VARBINARY(40)) = CAST('Captured' AS VARBINARY(40));
+WHERE txn_status COLLATE SQL_Latin1_General_CP1_CS_AS = 'Captured';
 GO
