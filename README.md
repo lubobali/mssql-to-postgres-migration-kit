@@ -1,5 +1,7 @@
 # SQL Server → PostgreSQL Migration Kit
 
+[![CI](https://github.com/lubobali/mssql-to-postgres-migration-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/lubobali/mssql-to-postgres-migration-kit/actions/workflows/ci.yml)
+
 Moving a payments database off Microsoft SQL Server onto AWS-managed PostgreSQL,
 and **proving the money still adds up on the other side.**
 
