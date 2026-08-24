@@ -13,7 +13,22 @@
 -- RDS PostgreSQL has no SQL Server Agent. pg_stat_statements is how any
 -- performance question gets answered with a number instead of a guess.
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+-- pg_cron is how scheduled jobs get rebuilt, and on RDS it requires
+-- shared_preload_libraries in the parameter group plus a reboot.
+--
+-- Tolerated rather than required, because a stock postgres:15 container
+-- does not ship it and CI runs against exactly that. Scheduled jobs are
+-- an operational concern; the migration's correctness does not depend on
+-- them, and a verification suite that cannot run without an RDS-specific
+-- extension is a verification suite nobody runs.
+DO $ext$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS pg_cron;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'pg_cron unavailable (%) — scheduled jobs will not be created', SQLERRM;
+END
+$ext$;
 
 /* ─── merchants ───────────────────────────────────────────────────── */
 
