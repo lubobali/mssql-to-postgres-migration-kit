@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Migration verification
+    runs-on: ubuntu-latest
+
+    # Both engines run as service containers inside the runner.
+    #
+    # The suite cannot reach the real AWS environment from here — the RDS
+    # instance is deliberately not publicly accessible, which is the point
+    # of it. So CI stands up disposable equivalents and runs the same
+    # tests against them. Same code, different connection strings.
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "CI_only_Passw0rd!"
+          MSSQL_PID: Developer
+          # Case-INsensitive, matching SQL Server's default. This is what
+          # makes the collation finding reproducible in CI rather than
+          # only on one person's machine.
+          MSSQL_COLLATION: SQL_Latin1_General_CP1_CI_AS
+        ports: ["1433:1433"]
+
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: payments
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the SQL Server ODBC driver
+        run: |
+          curl -sSL https://packages.microsoft.com/keys/microsoft.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list \
+            | sudo tee /etc/apt/sources.list.d/mssql-release.list >/dev/null
+          sudo apt-get update -qq
+          sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 unixodbc-dev
+
+      - name: Install Python dependencies
+        run: pip install --quiet pyodbc 'psycopg[binary]' boto3 pytest
+
+      - name: Wait for SQL Server
+        run: |
+          for i in $(seq 1 60); do
+            if python -c "
+          import pyodbc
+          pyodbc.connect('DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost,1433;'
+                         'UID=sa;PWD=CI_only_Passw0rd!;TrustServerCertificate=yes;', timeout=3)
+          " 2>/dev/null; then echo "ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "SQL Server never became ready" >&2; exit 1
+
+      - name: Build the source, migrate, verify
+        env:
+          CI_MODE: "1"
+          SQLSERVER_PASSWORD: "CI_only_Passw0rd!"
+          POSTGRES_PASSWORD: ci_only_password
+        run: |
+          python sqlserver/generate_data.py --merchants 50 --transactions 20000
+          python ci/run_pipeline.py
+          python -m pytest -v
