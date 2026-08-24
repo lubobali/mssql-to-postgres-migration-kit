@@ -1,0 +1,37 @@
+{
+  "rules": [
+    {
+      "rule-type": "selection",
+      "rule-id": "1",
+      "rule-name": "select-payments-tables",
+      "object-locator": { "schema-name": "dbo", "table-name": "%" },
+      "rule-action": "include",
+      "filters": []
+    },
+    {
+      "rule-type": "transformation",
+      "rule-id": "2",
+      "rule-name": "schema-dbo-to-public",
+      "rule-target": "schema",
+      "object-locator": { "schema-name": "dbo" },
+      "rule-action": "rename",
+      "value": "public"
+    },
+    {
+      "rule-type": "transformation",
+      "rule-id": "3",
+      "rule-name": "lowercase-table-names",
+      "rule-target": "table",
+      "object-locator": { "schema-name": "dbo", "table-name": "%" },
+      "rule-action": "convert-lowercase"
+    },
+    {
+      "rule-type": "transformation",
+      "rule-id": "4",
+      "rule-name": "lowercase-column-names",
+      "rule-target": "column",
+      "object-locator": { "schema-name": "dbo", "table-name": "%", "column-name": "%" },
+      "rule-action": "convert-lowercase"
+    }
+  ]
+}

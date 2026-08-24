@@ -47,6 +47,7 @@ sudo docker run -d \
   -e "MSSQL_SA_PASSWORD=${SA_PASSWORD}" \
   -e 'MSSQL_PID=Developer' \
   -e 'MSSQL_COLLATION=SQL_Latin1_General_CP1_CI_AS' \
+  -e 'MSSQL_AGENT_ENABLED=true' \
   -p 1433:1433 \
   -v mssql-data:/var/opt/mssql \
   "$IMAGE"
@@ -101,6 +102,13 @@ sudo docker cp 02_load.sql           "$CONTAINER":/tmp/02_load.sql
 
 sudo docker exec "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
   -S localhost -U sa -P "$SA_PASSWORD" -C -i /tmp/02_load.sql
+
+# ─── CDC, so DMS can replicate changes rather than only copying ──────
+
+log "Enabling Change Data Capture"
+sudo docker cp 03_enable_cdc.sql "$CONTAINER":/tmp/03_enable_cdc.sql
+sudo docker exec "$CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U sa -P "$SA_PASSWORD" -C -i /tmp/03_enable_cdc.sql
 
 log "Done"
 echo "  Connect:  sudo docker exec -it $CONTAINER /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '<pw>' -C -d payments"

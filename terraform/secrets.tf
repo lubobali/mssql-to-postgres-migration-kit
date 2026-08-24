@@ -10,13 +10,22 @@
 #  state in an encrypted S3 backend rather than on a laptop.
 # ─────────────────────────────────────────────────────────────────────
 
-# SQL Server rejects passwords that do not meet its complexity policy,
-# and chokes on some special characters when passed through Docker env
-# vars. This character set is deliberately conservative.
+# The character set is the intersection of what three systems accept,
+# and finding it took three failures:
+#
+#   SQL Server  rejects passwords failing its complexity policy, and
+#               chokes on some specials passed through Docker env vars
+#   DMS         "Password contains at least one unsupported characters
+#               from following list : ;+%"  — a password RDS accepts
+#               without complaint will fail an endpoint create
+#   shells      anything needing quoting shows up as a mystery later
+#
+# So: no ; + % and nothing shell-significant. Length carries the entropy
+# instead, which is the right trade anyway.
 resource "random_password" "sqlserver_sa" {
   length           = 32
   special          = true
-  override_special = "!#%*-_=+"
+  override_special = "!#*-_="
   min_upper        = 2
   min_lower        = 2
   min_numeric      = 2
@@ -26,7 +35,7 @@ resource "random_password" "sqlserver_sa" {
 resource "random_password" "postgres_master" {
   length           = 32
   special          = true
-  override_special = "!#%*-_=+"
+  override_special = "!#*-_="
   min_upper        = 2
   min_lower        = 2
   min_numeric      = 2
