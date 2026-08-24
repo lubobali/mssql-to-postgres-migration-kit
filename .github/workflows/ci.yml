@@ -51,9 +51,14 @@ jobs:
 
       - name: Install the SQL Server ODBC driver
         run: |
+          # --batch --yes: gpg tries to open /dev/tty otherwise, which does
+          # not exist on a runner ("cannot open '/dev/tty'").
           curl -sSL https://packages.microsoft.com/keys/microsoft.asc \
-            | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
-          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list \
+            | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          # Pin the repo to the runner's actual release rather than a
+          # hardcoded one, so an ubuntu-latest bump does not break this.
+          . /etc/os-release
+          curl -sSL "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/prod.list" \
             | sudo tee /etc/apt/sources.list.d/mssql-release.list >/dev/null
           sudo apt-get update -qq
           sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 unixodbc-dev
