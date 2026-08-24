@@ -131,12 +131,31 @@ resource "aws_dms_endpoint" "source" {
 
   ssl_mode = "none" # container uses a self-signed certificate
 
-  # safeguardPolicy: EXCLUSIVE_AUTOMATIC_TRUNCATION is the default and
-  # it starts a transaction on the source to stop the log being
-  # truncated before DMS has read it. On a busy production server that
-  # behaviour is surprising enough to be worth naming rather than
-  # inheriting silently.
-  extra_connection_attributes = "safeguardPolicy=EXCLUSIVE_AUTOMATIC_TRUNCATION"
+  # Two attributes, and the first one is not optional.
+  #
+  # setUpMsCdcForTables=true
+  #   DMS has TWO ways to read changes from SQL Server, and it picks the
+  #   wrong one by default here. MS-REPLICATION is the default and needs
+  #   a configured Distributor — full transactional replication
+  #   infrastructure. Without it the task dies at startup with:
+  #
+  #     "The MS SQL Server instance is not set up for Replication."
+  #     "The Distributor has not been installed correctly. Could not
+  #      enable database for publishing."
+  #
+  #   MS-CDC is the lighter path and the one this source has enabled
+  #   (see sqlserver/03_enable_cdc.sql). This attribute is what tells
+  #   DMS to use it. Nothing in the endpoint configuration hints that
+  #   the choice exists.
+  #
+  # safeguardPolicy=RELY_ON_SQL_SERVER_REPLICATION_AGENT
+  #   Governs how DMS stops the transaction log being truncated before
+  #   it has read it. The default, EXCLUSIVE_AUTOMATIC_TRUNCATION, opens
+  #   a transaction on the source to hold the log open — surprising
+  #   behaviour on a production server. With MS-CDC the capture job
+  #   already manages truncation, so DMS can rely on it instead of
+  #   interfering.
+  extra_connection_attributes = "setUpMsCdcForTables=true;safeguardPolicy=RELY_ON_SQL_SERVER_REPLICATION_AGENT"
 
   tags = { Name = "${var.project}-source" }
 }
