@@ -13,6 +13,11 @@
 USE payments;
 GO
 
+/* Required for any statement touching a table with a computed column —
+   including a plain DELETE. sqlcmd does not set it, and the error names
+   the SET option rather than the table that needs it. */
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
 SET NOCOUNT ON;
 GO
 
@@ -36,6 +41,12 @@ WITH (
     -- on the 'Linux' platform." SQL Server on Linux reads UTF-8 files
     -- natively, so the unicode merchant names survive without it. On
     -- Windows this line would be CODEPAGE = '65001'.
+    -- KEEPIDENTITY is required. SET IDENTITY_INSERT does NOT apply to
+    -- BULK INSERT: without this the loader discards the ids in the file
+    -- and tries to generate its own, which fails against a NOT NULL
+    -- identity column. The generated files carry explicit keys so the
+    -- dataset is reproducible, which is what makes a baseline meaningful.
+    KEEPIDENTITY,
     KEEPNULLS,
     TABLOCK
 );
@@ -54,6 +65,7 @@ WITH (
     FIELDTERMINATOR  = '|',
     ROWTERMINATOR    = '0x0a',
     -- CODEPAGE unsupported on Linux; see note above
+    KEEPIDENTITY,
     KEEPNULLS,
     TABLOCK,
     BATCHSIZE        = 50000
