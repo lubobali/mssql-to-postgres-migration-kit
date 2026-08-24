@@ -32,7 +32,10 @@ WITH (
     FORMAT           = 'CSV',
     FIELDTERMINATOR  = '|',
     ROWTERMINATOR    = '0x0a',
-    CODEPAGE         = '65001',   -- UTF-8, so the unicode names survive the load
+    -- No CODEPAGE: "Keyword or statement option 'CODEPAGE' is not supported
+    -- on the 'Linux' platform." SQL Server on Linux reads UTF-8 files
+    -- natively, so the unicode merchant names survive without it. On
+    -- Windows this line would be CODEPAGE = '65001'.
     KEEPNULLS,
     TABLOCK
 );
@@ -50,7 +53,7 @@ WITH (
     FORMAT           = 'CSV',
     FIELDTERMINATOR  = '|',
     ROWTERMINATOR    = '0x0a',
-    CODEPAGE         = '65001',
+    -- CODEPAGE unsupported on Linux; see note above
     KEEPNULLS,
     TABLOCK,
     BATCHSIZE        = 50000

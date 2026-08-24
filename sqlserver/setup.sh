@@ -33,7 +33,12 @@ fi
 
 log "Starting SQL Server 2022 (Developer Edition — free for non-production)"
 
+# Remove the volume too, not just the container. A named volume survives
+# docker rm, so the previous run's tables come back and the "idempotent"
+# rebuild silently is not one — which is how a stale schema ends up
+# being blamed on a migration bug.
 sudo docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+sudo docker volume rm mssql-data >/dev/null 2>&1 || true
 
 sudo docker run -d \
   --name "$CONTAINER" \
