@@ -102,3 +102,43 @@ resource "aws_instance" "sqlserver" {
     role = "legacy-source"
   }
 }
+
+# Permissions for the backup/restore drill.
+#
+# Scoped to this project's instances and snapshots by name pattern, not
+# rds:* on *. A drill that can delete any database in the account is not
+# a drill, it is an incident waiting for a typo.
+resource "aws_iam_role_policy" "restore_drill" {
+  name = "${var.project}-restore-drill"
+  role = aws_iam_role.sqlserver.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Read-only calls cannot be resource-scoped by the RDS API.
+        Effect   = "Allow"
+        Action   = ["rds:DescribeDBInstances", "rds:DescribeDBSnapshots"]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "rds:CreateDBSnapshot",
+          "rds:DeleteDBSnapshot",
+          "rds:RestoreDBInstanceFromDBSnapshot",
+          "rds:DeleteDBInstance",
+          "rds:AddTagsToResource",
+        ]
+        Resource = [
+          "arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:db:${var.project}-*",
+          "arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:snapshot:${var.project}-*",
+          "arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:subgrp:${var.project}-*",
+          "arn:aws:rds:${var.region}:${data.aws_caller_identity.current.account_id}:pg:${var.project}-*",
+        ]
+      },
+    ]
+  })
+}
+
+data "aws_caller_identity" "current" {}
