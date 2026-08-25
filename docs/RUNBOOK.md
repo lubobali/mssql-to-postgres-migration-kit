@@ -1,6 +1,13 @@
 # Runbook
 
-How to build this from nothing, and how to take it apart.
+Build it from nothing, and take it apart.
+
+Every command here was run. The gotchas in [Troubleshooting](#troubleshooting) are the ones
+that actually happened, not the ones that might.
+
+> **The fastest proof it works is [the CI run](https://github.com/lubobali/mssql-to-postgres-migration-kit/actions/workflows/ci.yml).**
+> It builds SQL Server 2022 and PostgreSQL 15 from scratch on a clean runner, seeds them,
+> migrates, and runs all 15 checks. No AWS account required to watch it happen.
 
 ---
 
@@ -8,42 +15,51 @@ How to build this from nothing, and how to take it apart.
 
 ```bash
 brew install awscli terraform
-aws configure          # region us-east-2, output json
+brew install --cask session-manager-plugin    # for a shell on the EC2 host
+aws configure                                  # region us-east-2, output json
 ```
 
-The AWS identity needs permission to create VPC, EC2, RDS, IAM, Secrets Manager and Budgets
-resources.
+The AWS identity needs to create VPC, EC2, RDS, DMS, IAM, Secrets Manager, S3, CloudWatch
+and Budgets resources.
 
-**If the account is on the AWS Free Plan**, only free-tier-eligible instance types are
-permitted and backup retention is capped. Both defaults here already account for that —
-`c7i-flex.large` and `backup_retention_days = 1`. On a standard account, raise the retention:
+**On an AWS Free Plan account**, two defaults already account for the restrictions:
+`c7i-flex.large` (a free-tier-eligible instance type) and `backup_retention_days = 1`.
+On a standard account, raise the retention and enable the proxy:
 
 ```hcl
 backup_retention_days = 7
+enable_rds_proxy      = true
 ```
 
 ---
 
-## Build
-
-### 1. Infrastructure
+## 1. Infrastructure
 
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
-# set admin_cidr to your own IP:  curl -s https://checkip.amazonaws.com
-# set alert_email for the budget alarm
+#   admin_cidr   your IP:  curl -s https://checkip.amazonaws.com
+#   alert_email  where budget and alarm notifications go
 
 terraform init
 terraform apply
 ```
 
-Roughly 10 minutes, most of it waiting for RDS. Outputs print the instance id and the
-Postgres endpoint.
+About 20 minutes. Most of it is RDS and the DMS replication instance.
 
-**Before anything else**, note the teardown command. See [Teardown](#teardown).
+**Note the teardown command before going further.** See [Teardown](#teardown).
 
-### 2. Get onto the SQL Server host
+Outputs you will need:
+
+```bash
+terraform output sqlserver_instance_id
+terraform output postgres_endpoint
+terraform output analytics_bucket
+```
+
+---
+
+## 2. Get onto the SQL Server host
 
 There is no SSH key and no open port 22.
 
@@ -51,29 +67,35 @@ There is no SSH key and no open port 22.
 aws ssm start-session --target $(terraform output -raw sqlserver_instance_id)
 ```
 
-Requires the Session Manager plugin locally. Without it, use `aws ssm send-command` — every
-step below works that way, which is also how they run unattended.
-
-### 3. Clone and install the drivers
+You land as `ssm-user`, which cannot read the lab directory and does not have the Python
+packages. Switch to root:
 
 ```bash
-sudo dnf install -y git
+sudo -i
+```
+
+> Every step below also works unattended through `aws ssm send-command`, which is how they
+> were originally run. If you do that, **`export HOME=/root` first** — see
+> [Troubleshooting](#troubleshooting).
+
+---
+
+## 3. Clone and install the drivers
+
+```bash
+dnf install -y git
 cd /home/ec2-user
 git clone https://github.com/lubobali/mssql-to-postgres-migration-kit.git lab
 cd lab/migration && bash bootstrap.sh
 ```
 
-> **If you drive this through `aws ssm send-command`, export `HOME` first.** SSM runs with no
-> `HOME`, so `git config --global` fails, `safe.directory` never gets set, and every
-> subsequent git command dies with "dubious ownership" — silently, while the pull appears to
-> succeed and you debug stale code for an hour.
->
-> ```bash
-> export HOME=/root
-> git -c safe.directory=/home/ec2-user/lab pull
-> ```
+Installs the Microsoft ODBC driver 18, `pyodbc`, `psycopg`, `boto3`, `pytest` and `pyarrow`.
+It ends by printing the versions and the detected ODBC driver — if that list is empty, stop
+there, nothing downstream will work.
 
-### 4. Build the legacy system
+---
+
+## 4. Build the legacy system
 
 ```bash
 cd /home/ec2-user/lab/sqlserver
@@ -81,9 +103,13 @@ export AWS_REGION=us-east-2
 bash setup.sh
 ```
 
-Starts SQL Server 2022 in Docker, creates the schema, generates 250,000 transactions, and
-bulk loads them. Idempotent — it removes the container **and its volume**, because a named
-volume outlives `docker rm` and a rebuild that inherits the previous schema is not a rebuild.
+This does five things:
+
+1. Starts SQL Server 2022 in Docker, **with the Agent enabled** (CDC needs it)
+2. Creates the schema, with all 12 migration traps
+3. Generates 250,000 transactions and bulk loads them
+4. Creates the non-sysadmin `dms_user` and verifies it can connect
+5. Enables CDC on the database and all four tables
 
 Expected:
 
@@ -95,62 +121,100 @@ settlements        12118
 
 case-insensitive (SQL Server default collation)   125504
 case-sensitive (how PostgreSQL will behave)        41612
+
+  sysadmin: no  ->  DMS will use MS-CDC
 ```
 
-### 5. Apply the PostgreSQL schema
+Idempotent. It removes the container **and its named volume**, because a volume outlives
+`docker rm` and a rebuild that inherits the old schema is not a rebuild.
+
+---
+
+## 5. Apply the PostgreSQL schema
 
 ```bash
 cd /home/ec2-user/lab/migration
 python3 - <<'EOF'
 import db
 c = db.postgres_connection(); c.autocommit = True
-c.execute(open("../postgres/01_schema.sql").read())
-c.execute(open("../postgres/02_scheduled_jobs.sql").read())
+c.execute(open("../postgres/01_schema.sql").read())          # converted schema
+c.execute(open("../postgres/02_scheduled_jobs.sql").read())  # pg_cron job
+c.execute(open("../postgres/03_microservice_split.sql").read())
 c.close()
 EOF
 ```
 
-### 6. Migrate
+---
+
+## 6. Migrate
+
+Two paths. Run either, or both.
+
+### The manual path
 
 ```bash
 python3 migrate.py
 ```
 
-About 15 seconds. Truncates the target first — a reload always starts clean.
+About 15 seconds. Truncates the target first, because a reload always starts clean.
 
-### 7. Verify
+### AWS DMS with CDC
+
+```bash
+python3 run_dms.py
+```
+
+Tests both endpoints, starts the task, waits for full load, then **writes a row to SQL
+Server and watches it arrive in PostgreSQL** — which is the whole point of CDC and the
+reason a real cutover uses DMS.
+
+```
+full load complete in 60s
+inserted txn_id 250001 on SQL Server
+  arrived after 3.0s
+```
+
+**Stop the task when finished, or it keeps replicating and keeps billing:**
+
+```bash
+aws dms stop-replication-task --replication-task-arn $(cd terraform && terraform output -raw dms_task_arn)
+```
+
+---
+
+## 7. Verify
 
 ```bash
 cd /home/ec2-user/lab
 python3 -m pytest -v
 ```
 
-**15 tests must pass.** If any fail, see
-[Remediation in FINDINGS.md](FINDINGS.md#remediation) — the response depends on which class
-of failure it is, and patching rows on the target is never the answer.
+**All 15 must pass.** If any fail, see
+[Remediation in FINDINGS.md](FINDINGS.md#remediation) — the right response depends on which
+class of failure it is, and patching rows on the target is never it.
+
+For the one-screen summary:
+
+```bash
+cd operations && PYTHONWARNINGS=ignore python3 show.py
+```
 
 ---
 
-## Operations
+## 8. Operations
 
 ### The nightly job
 
-RDS PostgreSQL has no SQL Server Agent, so the job is `pg_cron`:
-
 ```sql
 SELECT jobid, schedule, jobname, active FROM cron.job;
-
--- run it by hand
-SELECT run_daily_settlement_summary(1);
-
--- did it run?
-SELECT job_name, status, rows_written, finished_at - started_at AS duration
-FROM job_run_log ORDER BY run_id DESC LIMIT 10;
+SELECT run_daily_settlement_summary(1);              -- run it by hand
+SELECT job_name, status, rows_written, finished_at - started_at
+FROM job_run_log ORDER BY run_id DESC LIMIT 10;      -- did it run?
 ```
 
-`pg_cron` requires `shared_preload_libraries = pg_cron` in the parameter group **and a
-reboot**, plus `cron.database_name` naming the database. Both are set in
-`terraform/rds.tf`. It schedules in **UTC** regardless of the server timezone.
+`pg_cron` needs `shared_preload_libraries` in the parameter group **and a reboot**, plus
+`cron.database_name`. Both are in `terraform/rds.tf`. It schedules in **UTC** regardless of
+the server timezone.
 
 ### Backup and restore drill
 
@@ -160,25 +224,33 @@ python3 backup_restore_drill.py
 ```
 
 Snapshots, restores to a **new** instance, runs the verification profile against the restored
-copy, then deletes it. Writes `restore_drill_result.json`.
-
-The verification step is the point. A snapshot that restores into a database nobody queried
-is a file, not a recovery plan.
+copy, then deletes it. About 12 minutes. Writes `restore_drill_result.json`.
 
 ### Performance
 
-```sql
--- slowest statements
-SELECT calls, round(mean_exec_time::numeric, 2) AS avg_ms, query
-FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 10;
-
--- and a plan
-EXPLAIN (ANALYZE, BUFFERS)
-SELECT ... ;
+```bash
+python3 performance.py
 ```
 
-Performance Insights is enabled with 7-day retention (free tier), and is the better tool for
-"why was it slow yesterday".
+Measures, adds a covering index, measures again. Reports the result honestly including when
+the index does not help — which, on this dataset, it does not.
+
+### Analytics export
+
+```bash
+python3 export_to_s3.py --bucket $(cd ../../terraform && terraform output -raw analytics_bucket) --days 5
+```
+
+Writes Hive-partitioned Parquet to S3 and prints the Snowflake external stage DDL.
+
+### Microservice reconciliation
+
+```sql
+SELECT * FROM settlement_svc.reconcile_orphans();
+```
+
+Must return zero for every row. Replaces the foreign keys once the schemas become separate
+databases.
 
 ---
 
@@ -192,39 +264,53 @@ terraform destroy -auto-approve
 Then confirm nothing survived:
 
 ```bash
-aws rds describe-db-instances  --query 'DBInstances[].DBInstanceIdentifier'
-aws rds describe-db-snapshots  --query 'DBSnapshots[?starts_with(DBSnapshotIdentifier, `rds-migration-lab`)].DBSnapshotIdentifier'
-aws ec2 describe-instances     --filters "Name=tag:project,Values=rds-migration-lab" \
-                               --query 'Reservations[].Instances[].[InstanceId,State.Name]'
+aws rds describe-db-instances --query 'DBInstances[].DBInstanceIdentifier'
+aws dms describe-replication-instances --query 'ReplicationInstances[].ReplicationInstanceIdentifier'
+aws ec2 describe-instances --filters "Name=tag:project,Values=rds-migration-lab" \
+  --query 'Reservations[].Instances[].[InstanceId,State.Name]'
 ```
 
-**Snapshots created by the drill are not managed by Terraform** and will not be destroyed
-with it. Delete them explicitly:
+**Two things Terraform does not own:**
 
 ```bash
-for s in $(aws rds describe-db-snapshots \
-    --query 'DBSnapshots[?starts_with(DBSnapshotIdentifier, `rds-migration-lab-drill`)].DBSnapshotIdentifier' \
+# Snapshots created by the restore drill
+for s in $(aws rds describe-db-snapshots --snapshot-type manual \
+    --query 'DBSnapshots[?starts_with(DBSnapshotIdentifier,`rds-migration-lab-drill`)].DBSnapshotIdentifier' \
     --output text); do
   aws rds delete-db-snapshot --db-snapshot-identifier "$s"
 done
+
+# DMS task logs
+aws logs delete-log-group --log-group-name dms-tasks-rds-migration-lab-dms
 ```
 
-Running cost is roughly **$1.50/day**. The budget alarm fires at 50% of $20.
+Roughly **$2/day** while running. A budget alarm fires at 50% of $20, and it is created
+before any billable resource exists.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Cause |
+Every one of these happened.
+
+| Symptom | Cause and fix |
 |---|---|
-| `fatal: $HOME not set` | SSM runs without `HOME`. `export HOME=/root` |
-| `dubious ownership in repository` | Same cause. Use `git -c safe.directory=<path>` |
+| `fatal: $HOME not set` | SSM runs with no `HOME`, so `git config --global` fails silently, `safe.directory` never gets set, and every later git command dies. `export HOME=/root` |
+| `dubious ownership in repository` | Same cause. Use `git -c safe.directory=/home/ec2-user/lab pull` |
+| `Permission denied` on the lab directory | You are `ssm-user`. `sudo -i` |
+| `No module named 'boto3'` | Packages were installed as root under `/root/.local`. Run as root, not `ec2-user` |
 | Old schema keeps coming back | The Docker volume survived `docker rm`. `docker volume rm mssql-data` |
-| `Cannot create more than one clustered index` | The PK is clustered by default. Declare it `NONCLUSTERED` |
-| `SET options have incorrect settings: QUOTED_IDENTIFIER` | `SET QUOTED_IDENTIFIER ON` — needed by any statement touching a computed column, including `DELETE` |
-| `Explicit value must be specified for identity column` | `BULK INSERT` needs `KEEPIDENTITY`; `SET IDENTITY_INSERT` does not apply to it |
+| `Cannot create more than one clustered index` | A PK is clustered by default. Declare it `NONCLUSTERED` |
+| `SET options have incorrect settings: QUOTED_IDENTIFIER` | Needed by any statement touching a computed column, including `DELETE` |
+| `Explicit value must be specified for identity column` | `BULK INSERT` needs `KEEPIDENTITY`. `SET IDENTITY_INSERT` does not apply to it |
 | `IDENTITY_INSERT is already ON for table X` | An earlier `BULK INSERT` failed before its `OFF` ran. Fix the first error, not this one |
-| Unicode arrives as `σîùµû╣` | `BULK INSERT` on Linux cannot read UTF-8. Convert with `iconv -t UTF-16` (**not** `UTF-16LE` — only the former writes a BOM) and use `DATAFILETYPE = 'widechar'` |
-| `data file does not have a Unicode signature` | Missing BOM. Same fix. It then falls back to `char` and mangles the data **without failing** |
+| Unicode arrives as `σîùµû╣` | `BULK INSERT` on Linux cannot read UTF-8. Convert with `iconv -t UTF-16` (**not** `UTF-16LE`, only the former writes a BOM) and use `DATAFILETYPE = 'widechar'` |
+| `data file does not have a Unicode signature` | Missing BOM. Same fix. DMS then falls back to `char` and mangles the data **without failing** |
 | `extension "pg_cron" is not available` | Not in stock PostgreSQL images. On RDS it needs the parameter group plus a reboot |
 | `not eligible for Free Tier` | Account-level restriction, not a quota. Use a free-tier-eligible instance type |
+| `Invalid ReplicationInstance class` | `dms.t3.micro` was retired. `aws dms describe-orderable-replication-instances` is the authority |
+| `Password contains at least one unsupported characters : ;+%` | DMS rejects passwords RDS accepts. The charset must be the intersection of both |
+| `The Distributor has not been installed correctly` | DMS chose MS-REPLICATION because the login is `sysadmin`. Connect as a non-sysadmin user and it selects MS-CDC |
+| `Only members of the sysadmin fixed server role...` | Either `setUpMsCdcForTables=true` is set (remove it, it means "set CDC up FOR me") or `IgnoreMsReplicationEnablement=true` is missing |
+| `SELECT permission was denied on the object 'fn_dblog'` | DMS's row validator reads the log directly. Grant it, and note a LOGIN is not a USER — you need one in `master` first |
+| `Test connection ... should be successful for starting the replication task` | The endpoint changed. Re-run the connection test before starting |
