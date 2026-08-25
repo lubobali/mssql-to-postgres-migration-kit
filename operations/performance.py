@@ -138,6 +138,21 @@ def main() -> None:
     print("\n\033[1m▶ Result\033[0m")
     print(f"  {before_med:.1f} ms  ->  {after_med:.1f} ms   ({speedup:.1f}x)")
 
+    if speedup < 1.2:
+        print(
+            "\n  The index did not help, and that is the result.\n"
+            "\n  The existing btree on captured_at already answered this query,\n"
+            "  and buffers read was 0 before the change — the working set is\n"
+            "  cached, so there was no I/O to save.\n"
+            "\n  An index that does not help is not free. It is written on every\n"
+            "  INSERT, UPDATE and DELETE, it enlarges every backup, and it\n"
+            "  competes for the same cache that was making the query fast. On a\n"
+            "  table taking payment traffic that is a real cost for no benefit.\n"
+            "\n  The honest action is to drop it. Reporting a 1.0x as a win by\n"
+            "  quoting the best-of-N instead of the median would have been easy\n"
+            "  and would have left 12 MB of write amplification in production."
+        )
+
     # ─── index size, because it is not free ──────────────────────────
     size = conn.execute(
         "SELECT pg_size_pretty(pg_relation_size('ix_txn_settlement_covering'))"

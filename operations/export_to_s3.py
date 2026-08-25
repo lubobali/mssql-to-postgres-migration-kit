@@ -63,17 +63,22 @@ SCHEMA = pa.schema(
     ]
 )
 
+# The date arithmetic belongs in SQL, not in a Python f-string. Passing
+# "2026-11-01::date + 1" as a PARAMETER sends that text to Postgres as a
+# value, which fails with "invalid input syntax for type timestamp with
+# time zone". A parameter is a value; it is never fragment of SQL.
 QUERY = """
 SELECT txn_id, merchant_id, amount, fee_amount, currency,
        txn_status, captured_at, settled_at
 FROM transactions
-WHERE captured_at >= %s AND captured_at < %s
+WHERE captured_at >= %(day)s::date
+  AND captured_at <  %(day)s::date + interval '1 day'
 ORDER BY txn_id
 """
 
 
 def export_day(conn, bucket: str, day: str, prefix: str) -> tuple[int, int]:
-    rows = conn.execute(QUERY, (day, f"{day}::date + 1")).fetchall()
+    rows = conn.execute(QUERY, {"day": day}).fetchall()
     if not rows:
         return 0, 0
 
