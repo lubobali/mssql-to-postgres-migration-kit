@@ -38,24 +38,25 @@ def main() -> None:
     print(f"{BOLD}  SQL Server 2022  ──▶  PostgreSQL 15 on AWS RDS{OFF}")
     print(f"{DIM}  ────────────────────────────────────────────────────────────────{OFF}")
     print()
-    print(f"{DIM}                              SQL Server        PostgreSQL{OFF}")
+    print(f"{DIM}                                  SQL Server         PostgreSQL{OFF}")
 
     for table in ("merchants", "transactions", "batches", "settlements"):
         s, t = src["row_counts"][table], tgt["row_counts"][table]
         mark = f"{GREEN}✓{OFF}" if s == t else f"{RED}✗{OFF}"
-        print(f"  {table:<22}{s:>14,}{t:>18,}   {mark}")
+        print(f"  {table:<26}{s:>14,}{t:>19,}   {mark}")
 
     print()
     for col in ("transactions.amount", "settlements.net_amount"):
         s, t = src["money_sums"][col], tgt["money_sums"][col]
         mark = f"{GREEN}✓{OFF}" if Decimal(s) == Decimal(t) else f"{RED}✗{OFF}"
-        print(f"  {col:<22}{s:>14}{t:>18}   {mark}")
+        print(f"  {col:<26}{s:>14}{t:>19}   {mark}")
 
     print()
-    name = src["unicode_sample"][0] if src["unicode_sample"] else "(none)"
     same = src["unicode_sample"] == tgt["unicode_sample"]
     mark = f"{GREEN}✓{OFF}" if same else f"{RED}✗{OFF}"
-    print(f"  {name:<22}{'intact':>14}{'intact':>18}   {mark}")
+    # CJK and Cyrillic render at different widths than their character
+    # count, so a fixed-width pad misaligns. Use a fixed label instead.
+    print(f"  {'unicode merchant names':<26}{'intact':>14}{'intact':>19}   {mark}")
 
     print()
     print(f"{DIM}  ────────────────────────────────────────────────────────────────{OFF}")
