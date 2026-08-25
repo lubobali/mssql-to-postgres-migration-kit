@@ -180,6 +180,27 @@ Then follow **[docs/RUNBOOK.md](docs/RUNBOOK.md)** — 8 steps, with the expecte
 each one so you know whether it worked, and an 18-row troubleshooting table of things that
 actually went wrong here.
 
+**To point it at your own schema, edit [`schema.json`](schema.json).** Nothing else. The
+profiler, the migration and the verification suite all read from it.
+
+The type is what carries the meaning:
+
+```json
+{ "name": "amount",     "type": "money" }
+{ "name": "captured_at","type": "timestamp" }
+{ "name": "dba_name",   "type": "text", "nullable": true }
+```
+
+`money` gets summed exactly and never touches a float. `timestamp` gets read as the declared
+source timezone and gets its min and max compared, which is how a shift shows up. `nullable`
+gets a NULL count. `uuid` is migrated as a string, because SQL Server stores the first three
+fields little-endian and moving raw bytes scrambles it. `generated` is verified but never
+inserted.
+
+The optional blocks degrade rather than break — no `collation_check` and those tests skip
+instead of failing, so a schema without a case-sensitivity problem is not forced to pretend
+it has one.
+
 Tear down completely:
 
 ```bash
