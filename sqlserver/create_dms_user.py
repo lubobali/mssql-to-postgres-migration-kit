@@ -81,6 +81,24 @@ def main() -> None:
     )
     cur.execute("ALTER ROLE db_owner ADD MEMBER dms_user")
 
+    # DMS's own row validator reads the transaction log through
+    # sys.fn_dblog, which is not covered by db_owner or VIEW SERVER
+    # STATE. Without it the capture works and the VALIDATOR component
+    # fails, which reads as a task failure:
+    #   "The SELECT permission was denied on the object 'fn_dblog',
+    #    database 'mssqlsystemresource', schema 'sys'."
+    cur.execute("USE master")
+    for stmt in (
+        "GRANT SELECT ON sys.fn_dblog TO dms_user",
+        "GRANT VIEW ANY DEFINITION TO dms_user",
+        "GRANT VIEW DATABASE STATE TO dms_user",
+    ):
+        try:
+            cur.execute(stmt)
+            print(f"  granted: {stmt.split(' ON ')[-1].split(' TO ')[0] if ' ON ' in stmt else stmt[6:].split(' TO ')[0]}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  could not grant ({stmt[:40]}...): {str(exc)[:90]}")
+
     is_sa = cur.execute("SELECT IS_SRVROLEMEMBER('sysadmin', 'dms_user')").fetchone()[0]
     cur.close()
     conn.close()
