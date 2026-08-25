@@ -158,12 +158,26 @@ resource "aws_dms_endpoint" "source" {
   # non-sysadmin login and CDC in place, DMS selects MS-CDC on its own
   # and the attribute is not only unnecessary, it is actively fatal.
   #
+  # IgnoreMsReplicationEnablement=true is the actual fix, and the DMS
+  # task log is the only place its name appears:
+  #
+  #   Ignore_Ms_Replication_Enablement is set to 'false'
+  #   The MS SQL Server instance is not set up for Replication.
+  #   Database instance is not enabled for REPLICATION: Applying enablement...
+  #   -> Only members of the sysadmin fixed server role can perform this operation
+  #
+  # So even on the MS-CDC path, DMS checks whether the instance is set up
+  # for replication and, finding it is not, tries to ENABLE it — which
+  # needs the sysadmin privilege that was deliberately removed. This
+  # attribute tells it not to bother, because with CDC already enabled it
+  # does not need replication at all.
+  #
   # safeguardPolicy governs how DMS keeps the transaction log from being
   # truncated before it has read it. The default opens a transaction on
   # the source to hold the log open, which is surprising on a production
   # server; with MS-CDC the capture job already manages truncation, so
   # DMS can rely on it instead of interfering.
-  extra_connection_attributes = "safeguardPolicy=RELY_ON_SQL_SERVER_REPLICATION_AGENT"
+  extra_connection_attributes = "IgnoreMsReplicationEnablement=true;safeguardPolicy=RELY_ON_SQL_SERVER_REPLICATION_AGENT"
 
   tags = { Name = "${var.project}-source" }
 }
