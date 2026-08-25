@@ -1,0 +1,127 @@
+{
+  "_comment": [
+    "The schema, declared once, read by both the profiler and the migration.",
+    "",
+    "Point this at your own tables and the whole kit follows: the SELECT and",
+    "INSERT statements, the per-type conversions, and which checks the",
+    "verification suite runs.",
+    "",
+    "The type is what does the work. It decides three things at once:",
+    "  - how the value is read out of SQL Server (uuid needs a CAST)",
+    "  - how it is converted in Python (money must stay Decimal, never float)",
+    "  - which verification checks apply (money gets summed, dates get",
+    "    min/max compared, nullable columns get NULL counts)",
+    "",
+    "Supported types:",
+    "  int, bigint   whole numbers",
+    "  text          NVARCHAR / VARCHAR / text",
+    "  char          fixed width, trailing-space semantics preserved",
+    "  money         MONEY / numeric(19,4). Compared exactly, never rounded",
+    "  bool          BIT / boolean",
+    "  uuid          UNIQUEIDENTIFIER / uuid. Migrated as a STRING, because",
+    "                SQL Server stores the first three fields little-endian",
+    "                and moving raw bytes scrambles the value",
+    "  timestamp     DATETIME2 / timestamptz. Read as source_timezone",
+    "  date          DATE. No timezone on either side",
+    "  generated     computed on the target. Never inserted, only verified",
+    "",
+    "Tables must be listed parents-first: the migration loads in this order",
+    "and truncates in reverse, so foreign keys hold at both ends."
+  ],
+
+  "source_schema": "dbo",
+  "target_schema": "public",
+
+  "source_timezone": "UTC",
+  "_source_timezone_comment": [
+    "DATETIME2 carries no timezone, so this is an assertion about the",
+    "application that wrote the data, not something the database can tell",
+    "you. Get it wrong and every timestamp shifts by the offset, which moves",
+    "dates across midnight and changes which day a settlement belongs to.",
+    "The date_ranges check exists to catch exactly that."
+  ],
+
+  "collation_check": {
+    "_comment": [
+      "Optional. Names a column whose values differ only by case, and the",
+      "value a real query filters on.",
+      "",
+      "SQL Server's default collation is case-insensitive and PostgreSQL is",
+      "not, so the same WHERE clause returns different rows on each side with",
+      "no error. Set this and the suite measures the gap instead of leaving",
+      "it to be discovered in production."
+    ],
+    "table": "transactions",
+    "column": "txn_status",
+    "value": "Captured"
+  },
+
+  "unicode_check": {
+    "_comment": [
+      "Optional. Substrings that must survive the load byte-for-byte.",
+      "Encoding damage shows up in no row count and no sum."
+    ],
+    "table": "merchants",
+    "column": "legal_name",
+    "patterns": ["%北方%", "%Трейд%", "%Móvil%"]
+  },
+
+  "tables": [
+    {
+      "name": "merchants",
+      "primary_key": "merchant_id",
+      "columns": [
+        { "name": "merchant_id",       "type": "int" },
+        { "name": "merchant_guid",     "type": "uuid" },
+        { "name": "legal_name",        "type": "text" },
+        { "name": "dba_name",          "type": "text",      "nullable": true },
+        { "name": "mcc",               "type": "char" },
+        { "name": "is_active",         "type": "bool" },
+        { "name": "onboarding_status", "type": "text" },
+        { "name": "created_at",        "type": "timestamp" },
+        { "name": "updated_at",        "type": "timestamp", "nullable": true }
+      ]
+    },
+    {
+      "name": "transactions",
+      "primary_key": "txn_id",
+      "parent": { "column": "merchant_id", "table": "merchants" },
+      "columns": [
+        { "name": "txn_id",      "type": "bigint" },
+        { "name": "merchant_id", "type": "int" },
+        { "name": "amount",      "type": "money" },
+        { "name": "fee_amount",  "type": "money" },
+        { "name": "currency",    "type": "char" },
+        { "name": "card_last4",  "type": "char",      "nullable": true },
+        { "name": "auth_code",   "type": "text",      "nullable": true },
+        { "name": "txn_status",  "type": "text" },
+        { "name": "captured_at", "type": "timestamp" },
+        { "name": "settled_at",  "type": "timestamp", "nullable": true }
+      ]
+    },
+    {
+      "name": "batches",
+      "primary_key": "batch_id",
+      "columns": [
+        { "name": "batch_id",     "type": "int" },
+        { "name": "merchant_id",  "type": "int" },
+        { "name": "batch_date",   "type": "date" },
+        { "name": "txn_count",    "type": "int" },
+        { "name": "gross_amount", "type": "money" },
+        { "name": "batch_status", "type": "text" }
+      ]
+    },
+    {
+      "name": "settlements",
+      "primary_key": "settlement_id",
+      "columns": [
+        { "name": "settlement_id", "type": "int" },
+        { "name": "batch_id",      "type": "int" },
+        { "name": "net_amount",    "type": "money" },
+        { "name": "fee_amount",    "type": "money" },
+        { "name": "gross_amount",  "type": "generated" },
+        { "name": "settled_at",    "type": "timestamp" }
+      ]
+    }
+  ]
+}

@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "migration"))
 
+import schema as S  # noqa: E402
 from db import postgres_connection, sqlserver_connection  # noqa: E402
 from profile_db import profile  # noqa: E402
 
@@ -40,13 +41,15 @@ def main() -> None:
     print()
     print(f"{DIM}                                  SQL Server         PostgreSQL{OFF}")
 
-    for table in ("merchants", "transactions", "batches", "settlements"):
+    cfg = S.load()
+    for table in S.table_names(cfg):
         s, t = src["row_counts"][table], tgt["row_counts"][table]
         mark = f"{GREEN}✓{OFF}" if s == t else f"{RED}✗{OFF}"
         print(f"  {table:<26}{s:>14,}{t:>19,}   {mark}")
 
     print()
-    for col in ("transactions.amount", "settlements.net_amount"):
+    money = [f"{t}.{c}" for t, cs in S.money_columns(cfg).items() for c in cs][:2]
+    for col in money:
         s, t = src["money_sums"][col], tgt["money_sums"][col]
         mark = f"{GREEN}✓{OFF}" if Decimal(s) == Decimal(t) else f"{RED}✗{OFF}"
         print(f"  {col:<26}{s:>14}{t:>19}   {mark}")
@@ -70,7 +73,8 @@ def main() -> None:
 
     print(f"{BOLD}  Then the same settlement query, on each side:{OFF}")
     print()
-    print(f"{DIM}    WHERE txn_status = 'Captured'{OFF}")
+    cc = cfg.get("collation_check", {})
+    print(f"{DIM}    WHERE {cc.get('column','status')} = '{cc.get('value','')}'{OFF}")
     print()
     print(f"    SQL Server returned      {CYAN}{ci:>9,}{OFF} rows")
     print(f"    PostgreSQL returns       {CYAN}{cs:>9,}{OFF} rows")

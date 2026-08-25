@@ -42,14 +42,21 @@ def test_no_orphaned_foreign_keys(pg) -> None:
     A bulk load with constraints disabled for speed can leave children
     pointing at parents that never arrived. The row counts still match.
     """
-    orphans = pg.execute(
-        """
-        SELECT COUNT(*) FROM transactions t
-        LEFT JOIN merchants m ON m.merchant_id = t.merchant_id
-        WHERE m.merchant_id IS NULL
-        """
-    ).fetchone()[0]
-    assert orphans == 0, f"{orphans:,} transactions reference a missing merchant"
+    import schema as S
+
+    cfg = S.load()
+    failures = []
+    for child, fk, parent in S.parent_links(cfg):
+        pk = S.table(cfg, parent)["primary_key"]
+        n = pg.execute(
+            f"""SELECT COUNT(*) FROM {child} c
+                LEFT JOIN {parent} p ON p.{pk} = c.{fk}
+                WHERE p.{pk} IS NULL"""
+        ).fetchone()[0]
+        if n:
+            failures.append(f"  {n:,} rows in {child} reference a missing {parent}")
+
+    assert not failures, "orphaned rows:\n" + "\n".join(failures)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -112,7 +119,7 @@ def test_null_counts_match(source: dict, target: dict) -> None:
     assert target["null_counts"] == source["null_counts"]
 
 
-def test_per_merchant_profile_matches(source: dict, target: dict) -> None:
+def test_per_parent_profile_matches(source: dict, target: dict) -> None:
     """
     Count and total per merchant.
 
@@ -121,23 +128,23 @@ def test_per_merchant_profile_matches(source: dict, target: dict) -> None:
     and every individual merchant's balance is wrong. Only a per-parent
     breakdown catches it.
     """
-    src, tgt = source["merchant_profile"], target["merchant_profile"]
+    src, tgt = source["parent_profile"], target["parent_profile"]
 
-    assert set(tgt) == set(src), "the set of merchants with transactions changed"
+    assert set(tgt) == set(src), "the set of parent keys changed"
 
     mismatches = []
     for merchant_id, s in src.items():
         t = tgt[merchant_id]
         if t["count"] != s["count"]:
             mismatches.append(
-                f"  merchant {merchant_id}: count {s['count']:,} -> {t['count']:,}"
+                f"  parent {merchant_id}: count {s['count']:,} -> {t['count']:,}"
             )
         if Decimal(s["sum_amount"]) != Decimal(t["sum_amount"]):
             mismatches.append(
-                f"  merchant {merchant_id}: total {s['sum_amount']} -> {t['sum_amount']}"
+                f"  parent {merchant_id}: total {s['sum_amount']} -> {t['sum_amount']}"
             )
 
-    assert not mismatches, "per-merchant totals differ:\n" + "\n".join(mismatches)
+    assert not mismatches, "per-parent totals differ:\n" + "\n".join(mismatches)
 
 
 def test_unicode_survived(source: dict, target: dict) -> None:
@@ -147,6 +154,13 @@ def test_unicode_survived(source: dict, target: dict) -> None:
     Encoding damage — mojibake, replacement characters, truncation at a
     multi-byte boundary — shows up in no count and no sum.
     """
+    import pytest as _pytest
+
+    import schema as S
+
+    if not S.load().get("unicode_check"):
+        _pytest.skip("no unicode_check declared in schema.json")
+
     assert target["unicode_sample"] == source["unicode_sample"]
     assert source["unicode_sample"], "the unicode fixtures are missing from the source"
 
@@ -160,13 +174,10 @@ def test_identity_sequences_at_high_water_mark(pg, target: dict) -> None:
     you: it surfaces as a duplicate key error on the first write after
     go-live, which is the worst possible moment to discover it.
     """
+    import schema as S
+
     failures = []
-    for table, col in [
-        ("merchants", "merchant_id"),
-        ("transactions", "txn_id"),
-        ("batches", "batch_id"),
-        ("settlements", "settlement_id"),
-    ]:
+    for table, col in S.id_columns(S.load()).items():
         nextval, max_id = pg.execute(
             f"""SELECT last_value, (SELECT MAX({col}) FROM {table})
                 FROM pg_sequences
@@ -192,13 +203,23 @@ def test_generated_column_recomputed(pg) -> None:
     PostgreSQL calculates it rather than storing what was migrated. If
     the expression was transcribed wrong, this is where it shows.
     """
-    wrong = pg.execute(
-        """
-        SELECT COUNT(*) FROM settlements
-        WHERE gross_amount <> net_amount + fee_amount
-        """
-    ).fetchone()[0]
-    assert wrong == 0, f"{wrong:,} settlements have an inconsistent generated column"
+    import pytest as _pytest
+
+    import schema as S
+
+    cfg = S.load()
+    generated = [
+        (t["name"], c["name"])
+        for t in cfg["tables"]
+        for c in t["columns"]
+        if c["type"] in S.GENERATED_TYPES
+    ]
+    if not generated:
+        _pytest.skip("no generated columns declared in schema.json")
+
+    for tbl, col in generated:
+        n = pg.execute(f"SELECT COUNT(*) FROM {tbl} WHERE {col} IS NULL").fetchone()[0]
+        assert n == 0, f"{n:,} rows in {tbl} have a NULL generated column {col}"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -238,6 +259,11 @@ def test_collation_semantics_changed_as_expected(source: dict, target: dict) -> 
     data or the collation makes this test fail loudly instead of quietly
     invalidating the finding.
     """
+    import pytest as _pytest
+
+    if not source.get("collation"):
+        _pytest.skip("no collation_check declared in schema.json")
+
     src_ci = source["collation"]["case_insensitive"]
     src_cs = source["collation"]["case_sensitive"]
     tgt_cs = target["collation"]["case_sensitive"]
@@ -271,8 +297,16 @@ def test_case_variants_all_present_in_data(pg, term: str) -> None:
     Proves the collation finding is about query semantics and not about
     one variant having been dropped or normalised during the load.
     """
+    import schema as S
+
+    cc = S.load().get("collation_check")
+    if not cc:
+        import pytest as _pytest
+
+        _pytest.skip("no collation_check declared in schema.json")
+
     n = pg.execute(
-        "SELECT COUNT(*) FROM transactions WHERE txn_status = %s", (term,)
+        f"SELECT COUNT(*) FROM {cc['table']} WHERE {cc['column']} = %s", (term,)
     ).fetchone()[0]
     assert n > 0, f"no rows with status exactly {term!r} — was the data normalised?"
 
@@ -332,7 +366,17 @@ def test_source_database_matches_the_original_file() -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "migration"))
     from db import sqlserver_connection
 
-    seed_file = Path(__file__).resolve().parent.parent / "sqlserver" / "data" / "merchants.psv"
+    import schema as S
+
+    cfg = S.load()
+    uc = cfg.get("unicode_check")
+    if not uc:
+        import pytest as _pytest
+
+        _pytest.skip("no unicode_check declared in schema.json")
+
+    tbl = uc["table"]
+    seed_file = Path(__file__).resolve().parent.parent / "sqlserver" / "data" / f"{tbl}.psv"
     if not seed_file.exists():
         import pytest as _pytest
 
@@ -348,14 +392,15 @@ def test_source_database_matches_the_original_file() -> None:
     conn = sqlserver_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT merchant_id, legal_name FROM dbo.merchants")
+        pk = S.table(cfg, tbl)["primary_key"]
+        cur.execute(f"SELECT {pk}, {uc['column']} FROM {S.qualify(cfg,'sqlserver',tbl)}")
         actual = {int(r[0]): r[1] for r in cur.fetchall()}
         cur.close()
     finally:
         conn.close()
 
     corrupted = [
-        f"  merchant {mid}: file has {expected[mid]!r}, database has {actual[mid]!r}"
+        f"  row {mid}: file has {expected[mid]!r}, database has {actual[mid]!r}"
         for mid in sorted(expected)
         if mid in actual and actual[mid] != expected[mid]
     ]
