@@ -88,6 +88,17 @@ def main() -> None:
     #   "The SELECT permission was denied on the object 'fn_dblog',
     #    database 'mssqlsystemresource', schema 'sys'."
     cur.execute("USE master")
+
+    # A LOGIN is server-level; a USER is database-level. They are separate
+    # objects and creating one does not create the other. Granting on an
+    # object in master requires a user IN master, and its absence reports
+    # as "Cannot find the user 'dms_user'" — which reads like the login
+    # failed to create when it did.
+    cur.execute(
+        "IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'dms_user') "
+        "CREATE USER dms_user FOR LOGIN dms_user"
+    )
+
     for stmt in (
         "GRANT SELECT ON sys.fn_dblog TO dms_user",
         "GRANT VIEW ANY DEFINITION TO dms_user",
