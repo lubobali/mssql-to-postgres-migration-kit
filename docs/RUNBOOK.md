@@ -106,10 +106,13 @@ bash setup.sh
 This does five things:
 
 1. Starts SQL Server 2022 in Docker, **with the Agent enabled** (CDC needs it)
-2. Creates the schema, with all 12 migration traps
-3. Generates 250,000 transactions and bulk loads them
-4. Creates the non-sysadmin `dms_user` and verifies it can connect
-5. Enables CDC on the database and all four tables
+2. `01_schema.sql` creates the schema, with all 12 migration traps
+3. `generate_data.py` and `02_load.sql` produce and bulk load 250,000 transactions
+4. `create_dms_user.py` creates the non-sysadmin login and **verifies it can connect**
+5. `03_enable_cdc.sql` enables CDC on the database and all four tables
+
+Steps 4 and 5 are what make DMS work at all, and they are related: CDC on SQL Server runs as
+**Agent jobs**, and DMS only chooses the CDC path when the login is not `sysadmin`.
 
 Expected:
 
