@@ -159,13 +159,26 @@ docs/          FINDINGS, RUNBOOK, and the RDS-vs-Aurora decision record
 
 ## Running it
 
+**Fastest proof, no AWS account needed:**
+[watch the CI run](https://github.com/lubobali/mssql-to-postgres-migration-kit/actions/workflows/ci.yml).
+It builds SQL Server 2022 and PostgreSQL 15 from scratch on a clean runner, seeds them,
+migrates, and runs all 15 checks.
+
+**To run the full AWS version yourself:**
+
 ```bash
+brew install awscli terraform
+brew install --cask session-manager-plugin
+aws configure                                  # us-east-2
+
 cd terraform
 cp terraform.tfvars.example terraform.tfvars   # your IP, your email
-terraform init && terraform apply
+terraform init && terraform apply              # about 20 minutes
 ```
 
-Then follow **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
+Then follow **[docs/RUNBOOK.md](docs/RUNBOOK.md)** — 8 steps, with the expected output at
+each one so you know whether it worked, and an 18-row troubleshooting table of things that
+actually went wrong here.
 
 Tear down completely:
 
