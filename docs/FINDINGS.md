@@ -344,6 +344,200 @@ rewriting the data.
 
 ---
 
+## AWS DMS: six failures to reach a working task
+
+The manual migration is how you learn what is happening. DMS is what a real cutover uses,
+and the difference is not speed — it is that the source never stops accepting writes.
+
+**The result:**
+
+```
+full load               60s        250,000 transactions
+CDC replication lag     3.0s       measured, not estimated
+
+  inserted txn_id 250001 on SQL Server  00:50:55Z
+  arrived in PostgreSQL                 00:50:58Z
+  amount 7834.4321 — four decimals intact
+```
+
+Getting there took six failures, and they are worth listing because the first five all
+produce error messages that point somewhere other than the cause.
+
+### 1. `dms.t3.micro` does not exist
+
+```
+InvalidParameterValueException: Invalid ReplicationInstance class
+```
+
+AWS retired it. The error does not say what *is* valid.
+`aws dms describe-orderable-replication-instances` is the authority. `dms.t3.small` is the
+smallest that remains.
+
+### 2. Non-ASCII in a description field
+
+```
+The parameter ReplicationSubnetGroupDescription must not contain
+non-printable control characters.
+```
+
+An em-dash. DMS wants ASCII in that field.
+
+### 3. DMS rejects passwords that RDS accepts
+
+```
+The parameter Password contains at least one unsupported characters
+from following list : ;+%
+```
+
+RDS took the same password without complaint. The generated charset now has to be the
+**intersection** of what SQL Server, DMS and a shell all accept, with length carrying the
+entropy instead.
+
+### 4. The CDC mechanism is chosen from the LOGIN
+
+```
+The MS SQL Server instance is not set up for Replication.
+The Distributor has not been installed correctly.
+```
+
+DMS has two ways to read changes from SQL Server:
+
+| | Requires |
+|---|---|
+| **MS-REPLICATION** | A configured Distributor — full transactional replication infrastructure |
+| **MS-CDC** | CDC enabled on the database and tables |
+
+**And you do not choose directly.** DMS decides from the privileges of the connecting
+account: `sysadmin` gets MS-REPLICATION, anything else gets MS-CDC.
+
+Connecting as `sa` therefore forced the wrong mechanism, and no connection attribute could
+override it — the decision was made before any attribute was read.
+
+So the fix for the failure and the fix for the security problem were the same fix. A
+dedicated non-sysadmin `dms_user`. DMS should never have been connecting as `sa`.
+
+**And a genuine irony:** CDC on SQL Server is implemented as **SQL Server Agent jobs**. The
+Agent — the thing PostgreSQL has no equivalent of, the thing this migration replaces with
+`pg_cron` — has to be switched *on* before the migration can happen at all. Without it the
+capture tables stay empty while everything reports success.
+
+### 5. `setUpMsCdcForTables` means "set CDC up FOR me", not "use CDC"
+
+```
+Only members of the sysadmin fixed server role can perform this operation.
+```
+
+The attribute looked like the missing piece. It instructs DMS to run `sp_cdc_enable_table`
+itself, which needs exactly the sysadmin privilege that had just been removed on purpose.
+
+CDC was already enabled. The attribute was not merely unnecessary — it was fatal.
+
+### 6. The fix is named only in the task log
+
+```
+Ignore_Ms_Replication_Enablement is set to 'false'
+The MS SQL Server instance is not set up for Replication.
+Database instance is not enabled for REPLICATION: Applying enablement...
+  -> Only members of the sysadmin fixed server role can perform this operation
+```
+
+Even on the MS-CDC path, DMS checks whether the instance is configured for replication and,
+finding it is not, **tries to enable it** — requiring the privilege deliberately removed to
+get onto the MS-CDC path in the first place.
+
+`IgnoreMsReplicationEnablement=true` stops it. That name appears in the task log and not in
+the endpoint documentation.
+
+**How it was found matters more than the flag.** Not by searching, but by reading the log
+line by line. The error names a privilege. The line above it names the cause. The line above
+*that* names the setting.
+
+### And one more: a LOGIN is not a USER
+
+```
+The SELECT permission was denied on the object 'fn_dblog',
+database 'mssqlsystemresource', schema 'sys'.
+```
+
+DMS's own row validator reads the transaction log directly, which `db_owner` and
+`VIEW SERVER STATE` do not cover. Granting it failed with *"Cannot find the user
+'dms_user'"* — because a **login** is server-level and a **user** is database-level, and
+creating one does not create the other. That message reads like the login failed to create,
+which it had not; it had been verified two lines earlier by connecting as it.
+
+---
+
+## Performance: the index did not help, and that is the finding
+
+```
+before   14.7 ms    Aggregate -> Bitmap Heap Scan -> Bitmap Index Scan
+after    14.5 ms    same plan shape
+                    1.0x
+index size          12 MB against a 24 MB table
+```
+
+A covering index on `(captured_at, lower(txn_status)) INCLUDE (merchant_id, amount)` bought
+0.2 milliseconds.
+
+The existing btree on `captured_at` already answered the query, and **buffers read was 0
+before the change** — the working set is cached, so there was no I/O to save.
+
+**An index that does not help is not free.** It is written on every INSERT, UPDATE and
+DELETE, it enlarges every backup, and it competes for the same cache that was making the
+query fast. On a table taking payment traffic that is a real cost for no benefit.
+
+The honest action is to drop it.
+
+> Reporting this as a win would have been easy — quote best-of-N instead of the median and
+> 14.4 vs 14.5 becomes a number you can put in a slide. It would also have left 12 MB of
+> write amplification in production. The script now says so explicitly whenever the speedup
+> is under 1.2x.
+
+The migration-specific point underneath: the source table was **CLUSTERED** on `captured_at`,
+so range scans read physically sequential pages and stayed that way. PostgreSQL has no
+maintained clustered index. At a data size that no longer fits in cache, this same query
+behaves differently on the two engines, and no row count or checksum would show it.
+
+---
+
+## The analytics path
+
+```
+2026-11-01     7,561 rows    177 KB
+2026-08-29       928 rows     33 KB
+2026-08-28       996 rows     35 KB
+2026-08-27       975 rows     34 KB
+2026-08-26       926 rows     32 KB
+
+11,386 rows in 0.3 MB Parquet
+s3://.../payments/transactions/capture_date=YYYY-MM-DD/
+```
+
+Hive-partitioned Parquet, which Snowflake reads through an external stage with no
+Snowflake account needed to make the shape real.
+
+The line that matters is the schema: `amount` is declared `decimal128(19,4)` explicitly.
+Arrow's default inference for a Postgres `numeric` can land on `float64`, which would
+reintroduce the exact error the rest of this project exists to detect. Money stays exact end
+to end or the pipeline is not trustworthy.
+
+**This is a different problem from the migration**, and both are in the job description. RDS
+answers thousands of small reads and writes per second. This answers "sum a quarter."
+
+*(The 7,561 rows on 2026-11-01 are the DST-boundary cluster the generator plants
+deliberately.)*
+
+---
+
+## What a migration cannot fix
+
+- **RDS Proxy is unavailable on AWS Free Plan accounts.** The configuration is complete and
+  correct and sits behind a flag defaulting to off. A billing restriction, not a design gap.
+- **The collation semantics.** Covered above — a decision, not a reload.
+- **The clustered index.** No PostgreSQL equivalent exists.
+
+---
+
 ## What would be different at 100× the data
 
 This moved 250,000 rows in 14 seconds with the source offline. At 25 million with the source
